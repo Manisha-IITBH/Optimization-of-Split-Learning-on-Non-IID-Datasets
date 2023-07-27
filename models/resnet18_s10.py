@@ -1,0 +1,137 @@
+from torchvision import models
+import torch.nn as nn
+
+# change these manually for now
+num_front_layers = 4
+num_back_layers = 2
+# remember unfreeze will be counted from the end of each model
+num_unfrozen_front_layers = 0
+num_unfrozen_center_layers = 2   #exp with 1 or 2(max)
+num_unfrozen_back_layers = 2
+
+def get_resnet18(pretrained: bool):
+    model = models.resnet18(pretrained=pretrained)  # this will use cached model if available instead of downloadinig again
+    return model
+
+
+class front(nn.Module):
+    def __init__(self, input_channels=3, pretrained=False):
+        super(front, self).__init__()
+        model = get_resnet18(pretrained)
+        model_children = list(model.children())
+        self.input_channels = input_channels
+        if self.input_channels == 1:
+            self.conv_channel_change = nn.Conv2d(1,3,3,1,2)   #to keep the image size same as input image size to this conv layer
+        self.front_model = nn.Sequential(*model_children[:num_front_layers])
+        print("num_front_layers",num_front_layers)
+        print("num_unfrozen_front_layers",num_unfrozen_front_layers)
+        if pretrained:
+            layer_iterator = iter(self.front_model)
+            for i in range(num_front_layers-num_unfrozen_front_layers):
+                layer = layer_iterator.__next__()
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+    def forward(self, x):
+
+        if self.input_channels == 1:
+            x = self.conv_channel_change(x)
+        x = self.front_model(x)
+        return x
+
+
+class center(nn.Module):
+    def __init__(self, pretrained=False):
+        super(center, self).__init__()
+        model = get_resnet18(pretrained)
+        model_children = list(model.children())
+        global center_model_length
+        center_model_length = len(model_children) - num_front_layers - num_back_layers
+        #print((center_model_length))
+        
+        self.center_model = nn.Sequential(*model_children[num_front_layers:center_model_length+num_front_layers])
+        
+        print("center_model_length",center_model_length)
+        print("num_unfrozen_center_layers",num_unfrozen_center_layers)
+        if pretrained:
+            
+            layer_iterator = iter(self.center_model)
+          
+            for i in range(center_model_length-num_unfrozen_center_layers):
+                layer = layer_iterator.__next__()
+                for param in layer.parameters():
+                    param.requires_grad = False
+        
+    def freeze(self, epoch, pretrained=False):
+        print("freezing the center model")
+       
+        num_unfrozen_center_layers=0
+        if pretrained:
+            
+            layer_iterator = iter(self.center_model)
+            for i in range(center_model_length-num_unfrozen_center_layers):
+                layer = layer_iterator.__next__()
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+    def forward(self, x):
+        x = self.center_model(x)
+        return x
+
+
+
+class back(nn.Module):
+    def __init__(self, pretrained=False, output_dim=10):
+        super(back, self).__init__()
+        self.back_model = nn.Sequential(
+                    nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, groups=512),
+                    nn.Conv2d(in_channels=512, out_channels=256, kernel_size=1),
+                    #nn.Conv2d(512, 64, kernel_size=7, stride=1),
+                    #nn.Conv2d(512, 128, kernel_size=(7, 7), stride=(1, 1), padding=(1, 1), bias=False),
+                    #nn.Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False),
+                    nn.BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+                    nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                    nn.Flatten(start_dim=1, end_dim=-1),
+                    nn.Linear(in_features=256, out_features=64, bias=True),
+                    nn.Linear(in_features=64, out_features=10, bias=True),
+                    #nn.Linear(in_features=64, out_features=output_dim, bias=True),
+                    #nn.Linear(in_features=1024, out_features=10, bias=True)
+                )
+        global up_num_back_layers
+        up_num_back_layers = len(list(self.back_model.children()))
+        #self.back_model = nn.Sequential(*model_children[model_length-num_back_layers:])
+        print("num_back_layers",num_back_layers)
+        print("num_unfrozen_back_layers",num_unfrozen_back_layers)
+        if pretrained:
+            layer_iterator = iter(self.back_model)
+            for i in range(num_back_layers-num_unfrozen_back_layers):
+                layer = layer_iterator.__next__()
+                for param in layer.parameters():
+                    param.requires_grad = False
+    def freeze(self, epoch, pretrained=False):
+            print("freezing the back model")
+            if pretrained:
+                
+                layer_iterator = iter(self.back_model)
+                for i in range(up_num_back_layers):
+                    layer = layer_iterator.__next__()
+                    for param in layer.parameters():
+                        param.requires_grad = False
+
+
+    def forward(self, x):
+        x = self.back_model(x)
+        return x
+
+
+if __name__ == '__main__':
+    model = front(pretrained=True)
+    print(">>>>>>>>>>>>>>> front >>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    print(f'{model.front_model}\n\n')
+    model = center(pretrained=True)
+    print(">>>>>>>>>>>>>>> center >>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    print(f'{model.center_model}\n\n')
+    print(">>>>>>>>>>>>>>> back >>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    model = back(pretrained=True)
+    print(f'{model.back_model}')
+    
